@@ -152,7 +152,6 @@ defmodule Octopus.Canvas do
 
   @window_width 8
   @window_gap 18
-  @window_and_gap @window_gap + @window_width
 
   def to_frame(%Canvas{width: width, height: height} = canvas, opts \\ []) do
     window_gap = if Keyword.get(opts, :drop, false), do: @window_gap, else: 0
@@ -196,8 +195,8 @@ defmodule Octopus.Canvas do
     pixels =
       for x <- 0..(width - 1),
           y <- 0..(height - 1),
-          new_x = rem(x + dx, width),
-          new_y = rem(y + dy, height),
+          new_x = Integer.mod(x + dx, width),
+          new_y = Integer.mod(y + dy, height),
           into: %{},
           do: {{new_x, new_y}, Canvas.get_pixel(canvas, {x, y})}
 
@@ -217,7 +216,7 @@ defmodule Octopus.Canvas do
           into: %{},
           do: {{new_x, new_y}, Canvas.get_pixel(canvas, {x, y})}
 
-    %Canvas{canvas | pixels: pixels}
+    %Canvas{canvas | pixels: pixels, width: height, height: width}
   end
 
   def rotate(%Canvas{width: width, height: height} = canvas, :ccw) do
@@ -229,7 +228,7 @@ defmodule Octopus.Canvas do
           into: %{},
           do: {{new_x, new_y}, Canvas.get_pixel(canvas, {x, y})}
 
-    %Canvas{canvas | pixels: pixels}
+    %Canvas{canvas | pixels: pixels, width: height, height: width}
   end
 
   @doc """
@@ -396,10 +395,9 @@ defmodule Octopus.Canvas do
 
   def flip_horizontal(%Canvas{} = canvas) do
     pixels =
-      for x <- 0..(canvas.width - 1),
-          y <- 0..(canvas.height - 1),
-          do: {{x, y}, Canvas.get_pixel(canvas, {canvas.width - 1 - x, y})},
-          into: %{}
+      canvas.pixels
+      |> Enum.map(fn {{x, y}, value} -> {{canvas.width - 1 - x, y}, value} end)
+      |> Enum.into(%{})
 
     %Canvas{canvas | pixels: pixels}
   end

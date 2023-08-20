@@ -22,7 +22,8 @@ defmodule Octopus.App do
     AudioFrame,
     InputEvent,
     ControlEvent,
-    SynthFrame
+    SynthFrame,
+    SoundToLightControlEvent
   }
 
   alias Octopus.{Mixer, AppSupervisor}
@@ -42,7 +43,8 @@ defmodule Octopus.App do
   @doc """
   Optional callback to handle input events. An app will only receive input events if it is selected as active in the mixer.
   """
-  @callback handle_input(%InputEvent{}, state :: any) :: {:noreply, state :: any}
+  @callback handle_input(%InputEvent{} | %SoundToLightControlEvent{}, state :: any) ::
+              {:noreply, state :: any}
 
   @type config_option ::
           {String.t(), :int, %{min: integer(), max: integer(), default: integer()}}
@@ -68,6 +70,8 @@ defmodule Octopus.App do
   """
   @callback handle_config(config :: any(), state :: any()) :: {:noreply, state :: any()}
 
+  @callback handle_control_event(%ControlEvent{}, state :: any()) :: {:noreply, state :: any()}
+
   defmacro __using__(opts) do
     category = Keyword.get(opts, :category, :misc)
 
@@ -81,6 +85,10 @@ defmodule Octopus.App do
       end
 
       def handle_info({:event, %InputEvent{} = input_event}, state) do
+        handle_input(input_event, state)
+      end
+
+      def handle_info({:event, %SoundToLightControlEvent{} = input_event}, state) do
         handle_input(input_event, state)
       end
 
@@ -132,12 +140,25 @@ defmodule Octopus.App do
     end
   end
 
+  def play_sample(sample_path, channel) do
+    send_frame(%AudioFrame{uri: Path.join("file://", sample_path), channel: channel}, self())
+  end
+
   @doc """
   Send a frame to the mixer.
   """
   def send_frame(%frame_type{} = frame) when frame_type in @supported_frames do
-    app_id = AppSupervisor.lookup_app_id(self())
+    send_frame(frame, self())
+  end
+
+  def send_frame(%frame_type{} = frame, pid) when frame_type in @supported_frames do
+    app_id = AppSupervisor.lookup_app_id(pid)
     Mixer.handle_frame(app_id, frame)
+  end
+
+  def send_canvas(%Canvas{} = canvas) do
+    app_id = AppSupervisor.lookup_app_id(self())
+    Mixer.handle_canvas(app_id, canvas)
   end
 
   @spec default_config(config_schema()) :: map

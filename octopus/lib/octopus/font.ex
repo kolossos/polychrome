@@ -24,31 +24,31 @@ defmodule Octopus.Font do
   """
   def load(name) do
     Cachex.fetch!(__MODULE__, name, fn _ ->
-      path = Path.join([:code.priv_dir(:octopus), "fonts", "#{name}.png"])
+      path = find_font_path(name)
+      {:ok, img} = ExPng.Image.from_file(path)
 
-      if File.exists?(path) do
-        {:ok, img} = ExPng.Image.from_file(path)
-
-        variants =
-          img.pixels
-          |> to_rgb()
+      variants =
+        img.pixels
+        |> to_rgb()
+        |> Enum.chunk_every(8)
+        |> Enum.map(&List.flatten/1)
+        |> Enum.map(fn variant ->
+          variant
           |> Enum.chunk_every(8)
+          |> Enum.chunk_every(div(img.width, 8))
+          |> Enum.zip_with(&Function.identity/1)
           |> Enum.map(&List.flatten/1)
-          |> Enum.map(fn variant ->
-            variant
-            |> Enum.chunk_every(8)
-            |> Enum.chunk_every(div(img.width, 8))
-            |> Enum.zip_with(&Function.identity/1)
-            |> Enum.map(&List.flatten/1)
-          end)
+        end)
 
-        {:commit, %__MODULE__{name: name, variants: variants}}
-        # %__MODULE__{name: name, variants: variants}
-      else
-        raise "Font #{path} not found"
-      end
+      {:commit, %__MODULE__{name: name, variants: variants}}
     end)
   end
+
+  @doc """
+  Renders char but pipes better with canvas
+  """
+  def pipe_draw_char(canvas, font, char, variant, offset \\ {0, 0}),
+    do: draw_char(font, char, variant, canvas, offset)
 
   @doc """
   Renders a single character onto a canvas and returns the canvas.
@@ -96,5 +96,16 @@ defmodule Octopus.Font do
 
   defp to_rgb([<<r, g, b, 255>> | tl]) do
     [{r, g, b} | to_rgb(tl)]
+  end
+
+  defp find_font_path(name) do
+    font_dir = :code.priv_dir(:octopus) |> Path.join("fonts")
+
+    File.ls!(font_dir)
+    |> Enum.find(&String.starts_with?(&1, name))
+    |> case do
+      nil -> raise "Font #{name} not found"
+      filename -> Path.join(font_dir, filename)
+    end
   end
 end

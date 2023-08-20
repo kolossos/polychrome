@@ -2,25 +2,29 @@ defmodule Octopus.Apps.Snake do
   use Octopus.App, category: :game
   require Logger
 
+  alias Octopus.Sprite
   alias Octopus.Apps.Snake
+  alias Octopus.ButtonState
   alias Octopus.Protobuf.InputEvent
   alias Snake.Game
-  alias Snake.ButtonState
 
   @frame_rate 60
   @frame_time_ms trunc(1000 / @frame_rate)
 
   defmodule State do
-    defstruct [:game, :button_state, :t]
+    defstruct [:game, :button_state, :t, :side]
   end
 
   def name(), do: "Snake"
 
-  def init(_args) do
+  def icon(), do: Sprite.load("../images/snake", 0)
+
+  def init(args) do
     state = %State{
       button_state: ButtonState.new(),
-      game: Game.new(),
-      t: 0
+      game: Game.new(args),
+      t: 0,
+      side: args[:side] || :left
     }
 
     :timer.send_interval(@frame_time_ms, :tick)
@@ -38,12 +42,19 @@ defmodule Octopus.Apps.Snake do
     {:noreply, %State{state | button_state: bs |> ButtonState.handle_event(type, value)}}
   end
 
-  defp tick(%State{t: t, button_state: %ButtonState{} = bs} = state) do
-    game = state.game |> Game.tick(bs.joy1)
+  defp tick(%State{t: t, button_state: %ButtonState{} = bs, side: side} = state) do
+    game =
+      state.game
+      |> Game.tick(
+        case side do
+          :right -> bs.joy2
+          _ -> bs.joy1
+        end
+      )
 
     game
-    |> Game.render_frame()
-    |> send_frame()
+    |> Game.render_canvas()
+    |> send_canvas()
 
     %State{state | t: t + 1, game: game}
   end

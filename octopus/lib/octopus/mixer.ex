@@ -2,7 +2,10 @@ defmodule Octopus.Mixer do
   use GenServer
   require Logger
 
-  alias Octopus.{Broadcaster, Protobuf, AppSupervisor}
+  alias Octopus.Protobuf.SoundToLightControlEvent
+  alias Octopus.Protobuf.AudioFrame
+  alias Octopus.GameScheduler
+  alias Octopus.{Broadcaster, Protobuf, AppSupervisor, PlaylistScheduler, Canvas, GameScheduler}
 
   alias Octopus.Protobuf.{
     Frame,
@@ -16,13 +19,18 @@ defmodule Octopus.Mixer do
   @pubsub_frames [Frame, WFrame, RGBFrame]
   @transition_duration 300
   @transition_frame_time trunc(1000 / 60)
+  @playlist_id 3
+  @game_time [0..14, 30..44] |> Enum.flat_map(&Enum.to_list/1)
 
   defmodule State do
     defstruct selected_app: nil,
               last_selected_app: nil,
               rendered_app: nil,
               transition: nil,
-              max_luminance: 255
+              buffer_canvas: Canvas.new(80, 8),
+              max_luminance: 255,
+              scheduling_active?: false,
+              last_input: 0
   end
 
   def start_link(_) do
@@ -43,13 +51,20 @@ defmodule Octopus.Mixer do
     |> send_frame(frame, app_id)
   end
 
+  def handle_canvas(app_id, canvas) do
+    GenServer.cast(__MODULE__, {:new_canvas, {app_id, canvas}})
+  end
+
   defp send_frame(binary, frame, app_id) do
     GenServer.cast(__MODULE__, {:new_frame, {app_id, binary, frame}})
   end
 
   def handle_input(%InputEvent{} = input_event) do
-    app_id = get_selected_app()
-    AppSupervisor.send_event(app_id, input_event)
+    GenServer.cast(__MODULE__, {:input_event, input_event})
+  end
+
+  def handle_input(%SoundToLightControlEvent{} = stl_event) do
+    GenServer.cast(__MODULE__, {:sound_to_light_control_event, stl_event})
   end
 
   @doc """
@@ -59,11 +74,23 @@ defmodule Octopus.Mixer do
     GenServer.cast(__MODULE__, {:select_app, app_id})
   end
 
+  def select_app(app_id, side) when side in [:left, :right] do
+    GenServer.cast(__MODULE__, {:select_app, app_id, side})
+  end
+
   @doc """
   Returns the currently selected app.
   """
   def get_selected_app() do
     GenServer.call(__MODULE__, :get_selected_app)
+  end
+
+  def set_scheduling(active?) when is_boolean(active?) do
+    GenServer.cast(__MODULE__, {:set_scheduling, active?})
+  end
+
+  def scheduling_active? do
+    GenServer.call(__MODULE__, :scheduling_active?)
   end
 
   @doc """
@@ -79,7 +106,14 @@ defmodule Octopus.Mixer do
   end
 
   def init(:ok) do
-    state = %State{}
+    PlaylistScheduler.start_playlist(@playlist_id)
+
+    state = %State{
+      last_input: System.os_time(:second)
+    }
+
+    set_scheduling(true)
+
     {:ok, state}
   end
 
@@ -87,21 +121,107 @@ defmodule Octopus.Mixer do
     {:reply, selected_app, state}
   end
 
-  # broadcast frames from rendered app
-  def handle_cast({:new_frame, {app_id, binary, frame}}, %State{rendered_app: app_id} = state) do
-    send_frame(binary, frame)
+  def handle_call(:scheduling_active?, _, %State{scheduling_active?: scheduling_active?} = state) do
+    {:reply, scheduling_active?, state}
+  end
+
+  def handle_cast({:new_frame, {app_id, binary, f}}, %State{rendered_app: rendered_app} = state) do
+    case rendered_app do
+      {^app_id, _} -> send_frame(binary, f)
+      {_, ^app_id} -> send_frame(binary, f)
+      ^app_id -> send_frame(binary, f)
+      _ -> :noop
+    end
+
     {:noreply, state}
   end
 
-  # ignore frames from other apps
-  def handle_cast({:new_frame, {_app_id, _binary, _frame}}, state) do
+  def handle_cast(
+        {:new_canvas, {left_app_id, canvas}},
+        %State{rendered_app: {left_app_id, _}} = state
+      ) do
+    handle_new_canvas(state, canvas, {0, 0})
+  end
+
+  def handle_cast(
+        {:new_canvas, {right_app_id, canvas}},
+        %State{rendered_app: {_, right_app_id}} = state
+      ) do
+    handle_new_canvas(state, canvas, {40, 0})
+  end
+
+  def handle_cast({:new_canvas, _}, state), do: {:noreply, state}
+
+  def handle_cast({:input_event, %InputEvent{} = input_event}, %State{} = state) do
+    state =
+      %State{state | last_input: System.os_time(:second)}
+      |> do_handle_input(input_event)
+
     {:noreply, state}
+  end
+
+  def handle_cast(
+        {:sound_to_light_control_event, %SoundToLightControlEvent{} = stl_event},
+        %State{} = state
+      ) do
+    AppSupervisor.send_event(state.selected_app, stl_event)
+
+    {:noreply, state}
+  end
+
+  def handle_cast({:select_app, next_app_id, side}, %State{} = state) do
+    selected_app =
+      case {state.selected_app, side} do
+        {{_, right}, :left} -> {next_app_id, right}
+        {{left, _}, :right} -> {left, next_app_id}
+        {_, :left} -> {next_app_id, nil}
+        {_, :right} -> {nil, next_app_id}
+      end
+
+    state = %State{
+      state
+      | transition: nil,
+        selected_app: selected_app,
+        rendered_app: selected_app
+    }
+
+    broadcast_rendered_app(state)
+    broadcast_selected_app(state)
+
+    {:noreply, state}
+  end
+
+  def handle_cast(:stop_audio_playback, state) do
+    do_stop_audio_playback()
+    {:noreply, state}
+  end
+
+  defp handle_new_canvas(%State{} = state, %Canvas{} = canvas, offset) do
+    new_canvas =
+      canvas
+      |> Canvas.cut({0, 0}, {39, 7})
+
+    buffer_canvas =
+      state.buffer_canvas
+      |> Canvas.overlay(new_canvas, offset: offset, transparency: false)
+
+    frame =
+      buffer_canvas
+      |> Canvas.to_frame()
+
+    Protobuf.split_and_encode(frame)
+    |> Enum.each(fn binary ->
+      send_frame(binary, frame)
+    end)
+
+    state = maybe_stop_game_scheduler(state)
+
+    {:noreply, %State{state | buffer_canvas: buffer_canvas}}
   end
 
   ### App Transitions ###
   # Implemented with a simple state machine that is represented by the `transition` field in the state.
   # Possible values are `{:in, time_left}`, `{:out, time_left}` and `nil`.
-
   def handle_cast({:select_app, next_app_id}, %State{transition: nil} = state) do
     state = %State{
       state
@@ -123,7 +243,7 @@ defmodule Octopus.Mixer do
     }
 
     broadcast_selected_app(state)
-
+    broadcast_rendered_app(state)
     {:noreply, state}
   end
 
@@ -135,6 +255,29 @@ defmodule Octopus.Mixer do
         last_selected_app: state.selected_app
     }
 
+    broadcast_selected_app(state)
+
+    {:noreply, state}
+  end
+
+  def handle_cast({:set_scheduling, active?}, %State{} = state) do
+    if active? do
+      Logger.info("Starting scheduling")
+      PlaylistScheduler.start_playlist(@playlist_id)
+    else
+      Logger.info("Stopping scheduling")
+
+      GameScheduler.stop()
+      PlaylistScheduler.stop_playlist()
+    end
+
+    Phoenix.PubSub.broadcast(
+      Octopus.PubSub,
+      @pubsub_topic,
+      {:mixer, {:scheduling_active, active?}}
+    )
+
+    state = %State{state | scheduling_active?: active?}
     {:noreply, state}
   end
 
@@ -143,8 +286,15 @@ defmodule Octopus.Mixer do
   end
 
   def handle_info(:transition, %State{transition: {:out, time}} = state) when time <= 0 do
-    state = %State{state | transition: {:in, @transition_duration}}
+    state = %State{
+      state
+      | rendered_app: state.selected_app,
+        transition: {:in, @transition_duration}
+    }
+
     Broadcaster.set_luminance(0)
+
+    broadcast_rendered_app(state)
 
     schedule_transition()
 
@@ -191,7 +341,6 @@ defmodule Octopus.Mixer do
   end
 
   ### End App Transitions ###
-
   defp send_frame(binary, %frame_type{} = frame) do
     if frame_type in @pubsub_frames do
       Phoenix.PubSub.broadcast(Octopus.PubSub, @pubsub_topic, {:mixer, {:frame, frame}})
@@ -205,13 +354,92 @@ defmodule Octopus.Mixer do
   end
 
   defp broadcast_selected_app(%State{} = state) do
-    AppSupervisor.send_event(state.selected_app, %ControlEvent{type: :APP_SELECTED})
-    AppSupervisor.send_event(state.last_selected_app, %ControlEvent{type: :APP_DESELECTED})
+    selected =
+      case state.selected_app do
+        {_, _} -> nil
+        app_id -> app_id
+      end
 
     Phoenix.PubSub.broadcast(
       Octopus.PubSub,
       @pubsub_topic,
-      {:mixer, {:selected_app, state.selected_app}}
+      {:mixer, {:selected_app, selected}}
     )
   end
+
+  defp broadcast_rendered_app(%State{selected_app: {_, _}} = state), do: state
+
+  defp broadcast_rendered_app(%State{} = state) do
+    do_stop_audio_playback()
+    AppSupervisor.send_event(state.selected_app, %ControlEvent{type: :APP_SELECTED})
+    AppSupervisor.send_event(state.last_selected_app, %ControlEvent{type: :APP_DESELECTED})
+  end
+
+  def stop_audio_playback() do
+    GenServer.cast(__MODULE__, :stop_audio_playback)
+  end
+
+  defp do_handle_input(
+         %State{scheduling_active?: true} = state,
+         %InputEvent{type: :BUTTON_MENU, value: 1}
+       ) do
+    case DateTime.utc_now() do
+      %DateTime{minute: minute} when minute in @game_time ->
+        PlaylistScheduler.stop_playlist()
+        GameScheduler.start()
+
+      _ ->
+        :noop
+    end
+
+    state
+  end
+
+  defp do_handle_input(state, %InputEvent{type: :BUTTON_MENU}), do: state
+
+  defp do_handle_input(%State{} = state, %InputEvent{} = input_event) do
+    maybe_set_next_game(input_event)
+
+    case state.selected_app do
+      {left, right} ->
+        AppSupervisor.send_event(left, input_event)
+        AppSupervisor.send_event(right, input_event)
+
+      app_id ->
+        AppSupervisor.send_event(app_id, input_event)
+    end
+
+    state
+  end
+
+  defp maybe_stop_game_scheduler(%State{scheduling_active?: true} = state) do
+    %DateTime{minute: minute} = DateTime.utc_now()
+
+    if minute not in @game_time or state.last_input < System.os_time(:second) - 60 do
+      GameScheduler.stop()
+      PlaylistScheduler.start_playlist(@playlist_id)
+      state
+    else
+      state
+    end
+  end
+
+  defp maybe_stop_game_scheduler(state), do: state
+
+  defp do_stop_audio_playback do
+    1..10
+    |> Enum.map(&%AudioFrame{stop: true, channel: &1})
+    |> Enum.map(&Protobuf.encode/1)
+    |> Enum.each(&Broadcaster.send_binary/1)
+  end
+
+  defp maybe_set_next_game(%InputEvent{type: :BUTTON_5, value: 1}) do
+    GameScheduler.next_game(:left)
+  end
+
+  defp maybe_set_next_game(%InputEvent{type: :BUTTON_6, value: 1}) do
+    GameScheduler.next_game(:right)
+  end
+
+  defp maybe_set_next_game(_), do: :noop
 end

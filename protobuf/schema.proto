@@ -23,6 +23,7 @@ message Packet {
     FirmwareConfig firmware_config = 1; 
     RGBFrame rgb_frame_part1 = 7;
     RGBFrame rgb_frame_part2 = 8;
+    SoundToLightControlEvent sound_to_light_control_event = 11;
   }
 }
 
@@ -51,6 +52,7 @@ message RGBFrame {
 message AudioFrame {
   string uri = 1; // supports file://<path>, http(s)://<url> with .wav or .aiff files
   uint32 channel = 2;
+  bool stop = 3; // stops playback on specified channel if true
 }
 
 
@@ -131,9 +133,9 @@ enum InputType {
   AXIS_Y_2 = 13;
   
   BUTTON_A_1 = 14;
-  BUTTON_B_1 = 15;
-  BUTTON_A_2 = 16;
-  BUTTON_B_2 = 17;
+  BUTTON_A_2 = 15;
+  
+  BUTTON_MENU = 16;
 }
 
 message ControlEvent {
@@ -145,6 +147,12 @@ enum ControlEventType{
   APP_DESELECTED = 1;   // Emitted by octopus when the app is no longer displayed
   APP_STARTED = 2;      // Emitted by apps when they start
   APP_STOPPED = 3;      // Emitted by apps when they are finished. Eg to signal that the next app can be selected.
+}
+
+message SoundToLightControlEvent {
+  float bass = 1;
+  float mid = 2;
+  float high = 3;
 }
 
 message FirmwareConfig {

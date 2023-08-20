@@ -158,7 +158,7 @@ void MainApp::serverCmd(juce::ArgumentList const &args)
 
   port = port != 0 ? port : defaultPort;                   // default port
   cacheDir = cacheDir.isEmpty() ? "/tmp/beak" : cacheDir;  // default cache dir
-  resourceDir = resourceDir.isEmpty() ? "./resource" : resourceDir;
+  resourceDir = resourceDir.isEmpty() ? "./resources" : resourceDir;
 
   // setup chaching
   Cache cache(cacheDir, resourceDir);
@@ -207,6 +207,15 @@ void MainApp::serverCmd(juce::ArgumentList const &args)
                             {
                               auto uri = packet->audio_frame().uri();
                               auto channel = static_cast<int>(packet->audio_frame().channel());
+                              if (packet->audio_frame().stop())
+                              {
+                                if (auto err = engine->stopPlayback(channel))
+                                {
+                                  PLOGE << err.what();
+                                }
+                                return;
+                              }
+
                               if (auto [file, err] = cache.get(uri); !err)
                               {
                                 if (auto err = engine->playSound(file.value(), channel))
@@ -249,29 +258,33 @@ void MainApp::serverCmd(juce::ArgumentList const &args)
           };
 
           const auto synthFrame = packet->synth_frame();
-          const auto config = synthFrame.config();
-
-          // oscillator config
-          synth::Oscillator::Parameters oscParams(translateProtoWaveform(config.wave_form()),
-                                                  config.gain());
-
-          // adsr config
-          const auto adsrConfig = config.adsr_config();
-          juce::ADSR::Parameters adsrParams(adsrConfig.attack(), adsrConfig.decay(),
-                                            adsrConfig.sustain(), adsrConfig.release());
-          // filter config
-          synth::Filter::Parameters filterParams(translateProtoFilterType(config.filter_type()),
-                                                 config.cutoff(), config.resonance());
-          const auto filterAdsrConfig = config.filter_adsr_config();
-          juce::ADSR::Parameters filterAdsrParams(
-              filterAdsrConfig.attack(), filterAdsrConfig.decay(), filterAdsrConfig.sustain(),
-              filterAdsrConfig.release());
-
-          // configure the channel
-          if (Error err = engine->configureSynth(synthFrame.channel(), oscParams, adsrParams,
-                                                 filterParams, filterAdsrParams))
+          // we only want to set the config if it is a config frame or a
+          if (synthFrame.event_type() == CONFIG || synthFrame.event_type() == NOTE_ON)
           {
-            PLOGE << err.what();
+            const auto config = synthFrame.config();
+
+            // oscillator config
+            synth::Oscillator::Parameters oscParams(translateProtoWaveform(config.wave_form()),
+                                                    config.gain());
+
+            // adsr config
+            const auto adsrConfig = config.adsr_config();
+            juce::ADSR::Parameters adsrParams(adsrConfig.attack(), adsrConfig.decay(),
+                                              adsrConfig.sustain(), adsrConfig.release());
+            // filter config
+            synth::Filter::Parameters filterParams(translateProtoFilterType(config.filter_type()),
+                                                   config.cutoff(), config.resonance());
+            const auto filterAdsrConfig = config.filter_adsr_config();
+            juce::ADSR::Parameters filterAdsrParams(
+                filterAdsrConfig.attack(), filterAdsrConfig.decay(), filterAdsrConfig.sustain(),
+                filterAdsrConfig.release());
+
+            // configure the channel
+            if (Error err = engine->configureSynth(synthFrame.channel(), oscParams, adsrParams,
+                                                   filterParams, filterAdsrParams))
+            {
+              PLOGE << err.what();
+            }
           }
           // we only need the config here
           if (synthFrame.event_type() == CONFIG)

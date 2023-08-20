@@ -131,6 +131,15 @@ void SamplerProcessor::playSample(juce::File const &file)
   transportSource->addChangeListener(this);
   transportSource->start();
   m_source.addInputSource(transportSource, true);
+  m_transportSources.insert(transportSource);
+}
+
+void SamplerProcessor::stopPlayback()
+{
+  for (auto it = m_transportSources.begin(); it != m_transportSources.end(); ++it)
+  {
+    (*it)->stop();
+  }
 }
 
 /**
@@ -147,6 +156,7 @@ void SamplerProcessor::changeListenerCallback(juce::ChangeBroadcaster *emitter)
     if (!emitterSource->isPlaying())
     {
       m_source.removeInputSource(emitterSource);
+      m_transportSources.erase(m_transportSources.find(emitterSource));
     }
   }
 }

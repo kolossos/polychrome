@@ -48,9 +48,8 @@ defmodule Octopus.Protobuf.InputType do
   field :AXIS_X_2, 12
   field :AXIS_Y_2, 13
   field :BUTTON_A_1, 14
-  field :BUTTON_B_1, 15
-  field :BUTTON_A_2, 16
-  field :BUTTON_B_2, 17
+  field :BUTTON_A_2, 15
+  field :BUTTON_MENU, 16
 end
 
 defmodule Octopus.Protobuf.ControlEventType do
@@ -113,6 +112,11 @@ defmodule Octopus.Protobuf.Packet do
 
   field :rgb_frame_part1, 7, type: Octopus.Protobuf.RGBFrame, json_name: "rgbFramePart1", oneof: 0
   field :rgb_frame_part2, 8, type: Octopus.Protobuf.RGBFrame, json_name: "rgbFramePart2", oneof: 0
+
+  field :sound_to_light_control_event, 11,
+    type: Octopus.Protobuf.SoundToLightControlEvent,
+    json_name: "soundToLightControlEvent",
+    oneof: 0
 end
 
 defmodule Octopus.Protobuf.Frame do
@@ -151,6 +155,7 @@ defmodule Octopus.Protobuf.AudioFrame do
 
   field :uri, 1, type: :string
   field :channel, 2, type: :uint32
+  field :stop, 3, type: :bool
 end
 
 defmodule Octopus.Protobuf.SynthAdsrConfig do
@@ -227,6 +232,16 @@ defmodule Octopus.Protobuf.ControlEvent do
   use Protobuf, syntax: :proto3, protoc_gen_elixir_version: "0.12.0"
 
   field :type, 1, type: Octopus.Protobuf.ControlEventType, enum: true
+end
+
+defmodule Octopus.Protobuf.SoundToLightControlEvent do
+  @moduledoc false
+
+  use Protobuf, syntax: :proto3, protoc_gen_elixir_version: "0.12.0"
+
+  field :bass, 1, type: :float
+  field :mid, 2, type: :float
+  field :high, 3, type: :float
 end
 
 defmodule Octopus.Protobuf.FirmwareConfig do

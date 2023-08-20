@@ -76,18 +76,23 @@ defmodule Octopus.PlaylistScheduler do
   end
 
   def handle_cast({:start, id}, %State{} = state) do
-    playlist = %Playlist{} = get_playlist(id)
-    index = length(playlist.animations) - 1
-    Logger.info("Starting playlist #{inspect(playlist.name)}")
+    case get_playlist(id) do
+      playlist = %Playlist{} ->
+        index = length(playlist.animations) - 1
+        Logger.info("Starting playlist #{inspect(playlist.name)}")
 
-    state =
-      %State{state | playlist_id: id, index: index}
-      |> new_run_id()
-      |> broadcast()
+        state =
+          %State{state | playlist_id: id, index: index}
+          |> new_run_id()
+          |> broadcast()
 
-    send(self(), {:next, state.run_id})
+        send(self(), {:next, state.run_id})
 
-    {:noreply, state}
+        {:noreply, state}
+
+      nil ->
+        {:noreply, state}
+    end
   end
 
   def handle_cast(:stop, %State{} = state) do
@@ -105,13 +110,16 @@ defmodule Octopus.PlaylistScheduler do
     {:noreply, state}
   end
 
+  def handle_cast(:next_animation, %State{run_id: nil} = state), do: {:noreply, state}
+
   def handle_cast(:next_animation, %State{} = state) do
     state = state |> new_run_id()
 
     send(self(), {:next, state.run_id})
-    IO.inspect(state)
     {:noreply, state}
   end
+
+  def handle_cast(:prev_animation, %State{run_id: nil} = state), do: {:noreply, state}
 
   def handle_cast(:prev_animation, %State{} = state) do
     playlist = %Playlist{} = get_playlist(state.playlist_id)
